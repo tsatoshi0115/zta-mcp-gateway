@@ -9,6 +9,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { loadConfig, findUpstreamByPath } from "./config.js";
 import { verifyToken, extractBearerToken } from "./auth/jwt.js";
+import { resolveClients, issueTokens, refreshTokens } from "./auth/oauth.js";
 import { maskTools, isToolCallAllowed } from "./pep/masking.js";
 import { validateSqlQuery } from "./pep/firewall.js";
 import { defaultAuditLogger } from "./audit/logger.js";
@@ -64,7 +65,7 @@ app.get("/healthz", (_req: Request, res: Response) => {
 });
 
 // ==============================================================================
-// OAuth 2.1 Token Endpoint (Client Credentials Grant)
+// OAuth 2.1 Token Endpoint (Client Credentials & Refresh Token Grants)
 // ==============================================================================
 app.post("/oauth/token", (req: Request, res: Response) => {
   const grantType = req.body.grant_type || req.query.grant_type;
@@ -82,64 +83,79 @@ app.post("/oauth/token", (req: Request, res: Response) => {
     } catch (_) {}
   }
 
-  if (grantType !== "client_credentials") {
-    res.status(400).json({ error: "unsupported_grant_type" });
-    return;
-  }
+  // 1. Client Credentials Grant
+  if (grantType === "client_credentials") {
+    const clients = resolveClients(config);
+    const matchedClient = clients.find(
+      (c) => c.client_id === clientId && c.client_secret === clientSecret
+    );
 
-  const clients = config.auth?.clients || [
-    { client_id: "macosui-analyst", client_secret: "analyst-secret-2026", roles: ["analyst"] },
-    { client_id: "macosui-admin", client_secret: "admin-secret-2026", roles: ["admin"] },
-  ];
-
-  const matchedClient = clients.find(
-    (c) => c.client_id === clientId && c.client_secret === clientSecret
-  );
-
-  if (!matchedClient) {
-    defaultAuditLogger.log({
-      event_type: "AUTH_FAILED",
-      decision: "DENY",
-      reason: `Invalid client credentials for clientId: ${clientId}`,
-      details: { ip: req.ip },
-    });
-    res.status(401).json({ error: "invalid_client" });
-    return;
-  }
-
-  const secretKey =
-    (config.auth?.local_jwt_secret_env
-      ? process.env[config.auth.local_jwt_secret_env]
-      : undefined) ||
-    process.env.GATEWAY_JWT_SECRET ||
-    "zta-dev-default-secret-change-in-production";
-
-  const token = jwt.sign(
-    {
-      sub: matchedClient.client_id,
-      roles: matchedClient.roles,
-    },
-    secretKey,
-    {
-      issuer: config.auth?.issuer || "https://auth.techies.tokyo",
-      audience: config.auth?.audience || "zta-mcp-gateway",
-      expiresIn: "1h",
+    if (!matchedClient) {
+      defaultAuditLogger.log({
+        event_type: "AUTH_FAILED",
+        decision: "DENY",
+        reason: `Invalid client credentials for clientId: ${clientId}`,
+        details: { ip: req.ip },
+      });
+      res.status(401).json({ error: "invalid_client", error_description: "Client authentication failed" });
+      return;
     }
-  );
 
-  defaultAuditLogger.log({
-    event_type: "ACCESS_ALLOWED",
-    client_id: matchedClient.client_id,
-    roles: matchedClient.roles,
-    decision: "ALLOW",
-    details: { grant_type: "client_credentials" },
-  });
+    const scope = (req.body.scope || req.query.scope) as string | undefined;
+    const tokenResponse = issueTokens(matchedClient, config, { scope });
 
-  res.json({
-    access_token: token,
-    token_type: "Bearer",
-    expires_in: 3600,
-  });
+    defaultAuditLogger.log({
+      event_type: "ACCESS_ALLOWED",
+      client_id: matchedClient.client_id,
+      roles: matchedClient.roles,
+      decision: "ALLOW",
+      details: { grant_type: "client_credentials" },
+    });
+
+    res.json(tokenResponse);
+    return;
+  }
+
+  // 2. Refresh Token Grant
+  if (grantType === "refresh_token") {
+    const refreshToken = (req.body.refresh_token || req.query.refresh_token) as string | undefined;
+
+    if (!refreshToken) {
+      res.status(400).json({ error: "invalid_request", error_description: "Missing required 'refresh_token' parameter" });
+      return;
+    }
+
+    try {
+      const tokenResponse = refreshTokens(refreshToken, clientId, clientSecret, config);
+
+      defaultAuditLogger.log({
+        event_type: "ACCESS_ALLOWED",
+        client_id: clientId,
+        decision: "ALLOW",
+        details: { grant_type: "refresh_token" },
+      });
+
+      res.json(tokenResponse);
+      return;
+    } catch (err: any) {
+      const isClientErr = err.message.includes("invalid_client");
+      const status = isClientErr ? 401 : 400;
+      const errorCode = isClientErr ? "invalid_client" : "invalid_grant";
+
+      defaultAuditLogger.log({
+        event_type: "AUTH_FAILED",
+        decision: "DENY",
+        reason: `Token refresh failed: ${err.message}`,
+        details: { ip: req.ip, clientId },
+      });
+
+      res.status(status).json({ error: errorCode, error_description: err.message });
+      return;
+    }
+  }
+
+  // Unsupported grant
+  res.status(400).json({ error: "unsupported_grant_type", error_description: `Grant type '${grantType}' is not supported.` });
 });
 
 // State for active SSE transports

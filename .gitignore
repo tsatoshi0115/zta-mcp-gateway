@@ -37,3 +37,8 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
+
+# Archives
+*.tar
+*.zip
+*.gz

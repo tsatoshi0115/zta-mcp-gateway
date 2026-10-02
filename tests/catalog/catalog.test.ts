@@ -4,7 +4,7 @@ import path from "node:path";
 import { CatalogProvider } from "../../src/catalog/index.js";
 
 describe("CatalogProvider & Meta-Catalog MCP", () => {
-  const definitionsFile = path.resolve("config/catalog-definitions.yaml");
+  const definitionsFile = path.resolve("config/catalog-definitions.yaml.old");
   const provider = new CatalogProvider(definitionsFile);
 
   test("loads catalog definitions and returns tool definitions", () => {

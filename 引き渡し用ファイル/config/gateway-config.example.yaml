@@ -1,0 +1,109 @@
+# ==============================================================================
+# ZTA MCP Gateway - Sample Configuration File
+# ==============================================================================
+version: "1.0"
+
+server:
+  port: 8080
+  host: "0.0.0.0"
+  request_timeout_ms: 30000
+  cors:
+    origin: "*"
+    credentials: true
+
+# 認証設定 (OAuth 2.1 / JWT 検証)
+auth:
+  issuer: "https://auth.techies.tokyo"
+  audience: "zta-mcp-gateway"
+  jwks_uri: "https://auth.techies.tokyo/.well-known/jwks.json"
+  # ローカル開発・テスト用共有鍵
+  local_jwt_secret_env: "GATEWAY_JWT_SECRET"
+
+# プラガブル鍵管理 (Local | GCP | AWS | GitHub | Vault)
+secrets:
+  provider: "local" # local, gcp, aws, github, vault
+  local:
+    master_key_file: "./keys/master.key"
+  gcp:
+    project_id: "my-gcp-project"
+  aws:
+    region: "ap-northeast-1"
+  vault:
+    endpoint: "https://vault.example.com:8200"
+    role_id_env: "VAULT_ROLE_ID"
+    secret_id_env: "VAULT_SECRET_ID"
+
+# 上流MCPサーバー ルーティング & ZTA ポリシー定義
+upstreams:
+  # ----------------------------------------------------------------------------
+  # 1. MariaDB 公式 MCP サーバー (Read-Only ロール & SQL Firewall の実証)
+  # ----------------------------------------------------------------------------
+  - id: "mariadb-upstream"
+    path: "/mcp/mariadb"
+    target: "http://127.0.0.1:33060/sse"
+    description: "MariaDB Official MCP Server with Granular ZTA Protection"
+    policies:
+      # ロールベースのツール視界制御 (Context Masking)
+      role_mappings:
+        # ゲスト・一般ユーザー: ツール使用不可
+        guest:
+          allowed_tools: []
+        # アナリスト: 参照系クエリ・メタデータ取得のみ
+        analyst:
+          allowed_tools:
+            - "read_query"
+            - "list_tables"
+            - "describe_table"
+        # 運用担当者: 更新クエリも利用可能
+        operator:
+          allowed_tools:
+            - "read_query"
+            - "write_query"
+            - "list_tables"
+            - "describe_table"
+        # 管理者: 全ツール無制限
+        admin:
+          allowed_tools:
+            - "*"
+
+      # 実行時クエリファイアウォール (Query Firewall)
+      firewall:
+        enforce_sql_check: true
+        restricted_roles:
+          - "analyst"
+        allowed_statements:
+          - "SELECT"
+        deny_statements:
+          - "INSERT"
+          - "UPDATE"
+          - "DELETE"
+          - "DROP"
+          - "ALTER"
+          - "TRUNCATE"
+          - "RENAME"
+          - "GRANT"
+          - "REVOKE"
+        max_limit: 1000 # SELECTクエリに対する行数制限注入
+
+  # ----------------------------------------------------------------------------
+  # 2. Docker Monitor MCP サーバー (稼働状況 vs ログ参照 の分離実証)
+  # ----------------------------------------------------------------------------
+  - id: "docker-monitor-upstream"
+    path: "/mcp/docker"
+    target: "http://127.0.0.1:3000/sse"
+    description: "Docker Monitor MCP Server with Container Ops Isolation"
+    policies:
+      role_mappings:
+        # its ロール: コンテナ稼働状況 (docker ps) のみ参照可能
+        its:
+          allowed_tools:
+            - "docker_ps"
+        # ops ロール: 稼働状況に加えてログ参照 (docker logs) も可能
+        ops:
+          allowed_tools:
+            - "docker_ps"
+            - "docker_logs"
+        # secadmin ロール: 全ツール利用可能
+        secadmin:
+          allowed_tools:
+            - "*"

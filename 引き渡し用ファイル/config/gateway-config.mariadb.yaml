@@ -1,0 +1,48 @@
+version: "1.0"
+
+server:
+  port: 8085
+  host: "127.0.0.1"
+  cors:
+    origin: "*"
+
+auth:
+  issuer: "https://auth.techies.tokyo"
+  audience: "zta-mcp-gateway"
+  local_jwt_secret_env: "GATEWAY_JWT_SECRET"
+
+secrets:
+  provider: "local"
+
+upstreams:
+  - id: "mariadb-upstream"
+    path: "/mcp/mariadb"
+    target: "http://127.0.0.1:33060/mcp"
+    description: "MariaDB MCP Server with ZTA Protection"
+    policies:
+      role_mappings:
+        guest:
+          allowed_tools: []
+        analyst:
+          allowed_tools:
+            - "read_query"
+            - "list_tables"
+            - "describe_table"
+        admin:
+          allowed_tools:
+            - "*"
+      firewall:
+        enforce_sql_check: true
+        restricted_roles:
+          - "analyst"
+        allowed_statements:
+          - "SELECT"
+        deny_statements:
+          - "INSERT"
+          - "UPDATE"
+          - "DELETE"
+          - "DROP"
+          - "ALTER"
+          - "TRUNCATE"
+          - "GRANT"
+          - "REVOKE"

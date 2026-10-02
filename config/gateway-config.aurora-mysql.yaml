@@ -1,0 +1,109 @@
+# ==============================================================================
+# ZTA MCP Gateway - AWS Aurora MySQL Configuration
+# ==============================================================================
+# 対応 MCP サーバー: awslabs.mysql-mcp-server (https://github.com/awslabs/mcp)
+# 接続方式: MySQL Wire Protocol + AWS IAM 認証 (mysqlwire_iam)
+#
+# MCP サーバー起動例 (uvx):
+#   uvx awslabs.mysql-mcp-server@latest \
+#     --allow_write_query false
+#
+# LLM への接続指示例:
+#   "Connect to database named 'stg_stg1' with database endpoint as
+#    'archivedb-stg-all.cluster-cnjrahksecvj.ap-northeast-1.rds.amazonaws.com'
+#    with database_type as 'aurora-mysql', using mysqlwire_iam as connection
+#    method in 'ap-northeast-1' region, cluster identifier 'archivedb-stg-all',
+#    port 3306."
+#
+# 必要 IAM 権限:
+#   - rds:DescribeDBClusters
+#   - rds:DescribeDBInstances
+#   - rds-db:connect (IAM DB 認証)
+# ==============================================================================
+
+version: "1.0"
+
+server:
+  port: 8085
+  host: "127.0.0.1"
+  cors:
+    origin: "*"
+
+auth:
+  issuer: "https://auth.techies.tokyo"
+  audience: "zta-mcp-gateway"
+  local_jwt_secret_env: "GATEWAY_JWT_SECRET"
+
+catalog:
+  definitions_file: "./catalog-definitions.yaml"
+
+# AWS Secrets Manager を使用する場合は provider: "aws" に変更し、region を設定
+secrets:
+  provider: "local"
+  aws:
+    region: "ap-northeast-1"
+
+upstreams:
+  - id: "catalog"
+    path: "/mcp/catalog"
+    target: "internal://catalog"
+    description: "Meta-Catalog MCP for Database Schemas and GenUI Specifications"
+    policies:
+      role_mappings:
+        guest:
+          allowed_tools: []
+        analyst:
+          allowed_tools:
+            - "list_catalog"
+            - "get_catalog_detail"
+        admin:
+          allowed_tools:
+            - "*"
+
+  # ----------------------------------------------------------------------------
+  # Aurora MySQL MCP サーバー (awslabs.mysql-mcp-server)
+  # 接続先: archivedb-stg-all (ap-northeast-1) / database: stg_stg1
+  # 認証:   MySQL Wire Protocol + IAM 認証 (mysqlwire_iam)
+  # ----------------------------------------------------------------------------
+  - id: "aurora-mysql"
+    path: "/mcp/aurora-mysql"
+    target: "http://127.0.0.1:33061/mcp"
+    description: "AWS Aurora MySQL MCP Server (archivedb-stg-all / stg_stg1) with ZTA Protection — Read-Only"
+    policies:
+      role_mappings:
+        # ゲスト: ツール使用不可
+        guest:
+          allowed_tools: []
+        # アナリスト: 参照系のみ (クラスター作成・変更系は除外)
+        analyst:
+          allowed_tools:
+            - "connect_to_database"
+            - "is_database_connected"
+            - "get_database_connection_info"
+            - "run_query"
+            - "get_table_schema"
+        # 管理者: 全ツール (create_cluster, get_job_status を含む)
+        admin:
+          allowed_tools:
+            - "*"
+      # SQL ファイアウォール: SELECT / SHOW / DESC のみ許可
+      firewall:
+        enforce_sql_check: true
+        restricted_roles:
+          - "analyst"
+        allowed_statements:
+          - "SELECT"
+          - "SHOW"
+          - "DESC"
+        deny_statements:
+          - "INSERT"
+          - "UPDATE"
+          - "DELETE"
+          - "DROP"
+          - "ALTER"
+          - "TRUNCATE"
+          - "GRANT"
+          - "REVOKE"
+          - "CREATE"
+          - "REPLACE"
+          - "SET"

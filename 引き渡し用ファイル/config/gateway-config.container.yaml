@@ -1,0 +1,55 @@
+version: "1.0"
+
+server:
+  port: 8080
+  host: "0.0.0.0"
+  cors:
+    origin: "*"
+
+auth:
+  issuer: "https://auth.techies.tokyo"
+  audience: "zta-mcp-gateway"
+  local_jwt_secret_env: "GATEWAY_JWT_SECRET"
+  clients:
+    - client_id: "macosui-analyst"
+      client_secret: "analyst-secret-2026"
+      roles: ["analyst"]
+    - client_id: "macosui-admin"
+      client_secret: "admin-secret-2026"
+      roles: ["admin"]
+
+secrets:
+  provider: "local"
+
+upstreams:
+  - id: "mariadb"
+    path: "/mcp/mariadb"
+    target: "http://host.docker.internal:33060/mcp"
+    description: "MariaDB MCP Server with ZTA Protection"
+    policies:
+      role_mappings:
+        guest:
+          allowed_tools: []
+        analyst:
+          allowed_tools:
+            - "read_query"
+            - "list_tables"
+            - "describe_table"
+        admin:
+          allowed_tools:
+            - "*"
+      firewall:
+        enforce_sql_check: true
+        restricted_roles:
+          - "analyst"
+        allowed_statements:
+          - "SELECT"
+        deny_statements:
+          - "INSERT"
+          - "UPDATE"
+          - "DELETE"
+          - "DROP"
+          - "ALTER"
+          - "TRUNCATE"
+          - "GRANT"
+          - "REVOKE"

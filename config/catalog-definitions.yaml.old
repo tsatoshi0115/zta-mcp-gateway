@@ -1,0 +1,269 @@
+version: "1.0"
+catalogs:
+  # ============================================================================
+  # 1. NPB プロ野球統計データベース (2024-2026 マルチ年度分析 & 優勝シミュレーション)
+  # ============================================================================
+  - id: "npb_baseball_analytics"
+    name: "NPB プロ野球統計データベース (2024-2026)"
+    description: "プロ野球（セ・パ両リーグ）の選手マスタ、2024年・2025年の公式成績、および2026年最新（残り20試合・終盤時点）の打撃・投平成績、順位表、WAR/WAA セイバーメトリクス指標"
+    target_mcp: "mariadb"
+    target_tool: "read_query"
+    required_roles: ["analyst", "admin"]
+
+    # --- 1. データモデル (スキーマ定義) ---
+    schema:
+      tables:
+        - name: "batting_stats"
+          description: "野手のシーズン打撃成績 (2024年・2025年・2026年最新)"
+          primary_key: "id"
+          columns: "id (INT), player_id (INT, FK), year (INT: 2024, 2025, 2026), war (DECIMAL: 総合勝利寄与度), waa (DECIMAL: 平均以上勝利数), batting_avg (DECIMAL: 打率), home_runs (INT: 本塁打), rbi (INT: 打点), ops (DECIMAL: OPS), woba (DECIMAL), title_awards (VARCHAR: タイトル表彰)"
+          relationships:
+            - "JOIN players ON batting_stats.player_id = players.player_id"
+
+        - name: "pitching_stats"
+          description: "投手のシーズン成績 (2024年・2025年・2026年最新)"
+          primary_key: "id"
+          columns: "id (INT), player_id (INT, FK), year (INT: 2024, 2025, 2026), war (DECIMAL), waa (DECIMAL), era (DECIMAL: 防御率), whip (DECIMAL), fip (DECIMAL), wins (INT: 勝利), losses (INT: 敗戦), saves (INT: セーブ), holds (INT: ホールド), strikeouts (INT: 奪三振), title_awards (VARCHAR)"
+          relationships:
+            - "JOIN players ON pitching_stats.player_id = players.player_id"
+
+        - name: "players"
+          description: "選手基本情報マスタ"
+          primary_key: "player_id"
+          columns: "player_id (INT), name (VARCHAR: 選手名), team_id (VARCHAR: 球団コード), position (VARCHAR: 守備位置), bats_throws (VARCHAR: 投打)"
+
+        - name: "teams"
+          description: "球団マスタ"
+          primary_key: "team_id"
+          columns: "team_id (VARCHAR: 'T','DB','G','D','C','S','H','F','M','E','B','L'), team_name (VARCHAR: 正式球団名), league (VARCHAR: 'Central' or 'Pacific')"
+
+        - name: "team_standings"
+          description: "球団順位表 (2024年・2025年・2026年最新)"
+          primary_key: "id"
+          columns: "id (INT), team_id (VARCHAR), team_name (VARCHAR), league (VARCHAR), year (INT: 2024, 2025, 2026), wins (INT), losses (INT), draws (INT), win_rate (DECIMAL), games_behind (DECIMAL)"
+
+      query_rules:
+        - "年度比較や分析を行う際は、year 条件（2024, 2025, 2026）を明示してください。"
+        - "選手名を表示する際は、必ず players テーブルを player_id で JOIN してください。"
+        - "探索用コマンド (SHOW TABLES, DESCRIBE) は不要です。直接本定義のカラムで SELECT を発行してください。"
+
+      recommended_queries:
+        - title: "2025年 野手 WAR ランキング TOP 10 抽出"
+          sql: |
+            SELECT p.name, t.team_name, b.year, b.war, b.waa, b.home_runs, b.batting_avg, b.ops, b.title_awards
+            FROM batting_stats b
+            JOIN players p ON b.player_id = p.player_id
+            JOIN teams t ON p.team_id = t.team_id
+            WHERE b.year = 2025
+            ORDER BY b.war DESC
+            LIMIT 10;
+        - title: "2024 vs 2025 年 野手比較（同一選手の2カ年推移）"
+          sql: |
+            SELECT p.name, t.team_name,
+                   b25.war AS war_2025, b25.waa AS waa_2025, b25.home_runs AS hr_2025, b25.batting_avg AS avg_2025, b25.ops AS ops_2025, b25.title_awards AS title_2025,
+                   b24.war AS war_2024, b24.waa AS waa_2024, b24.home_runs AS hr_2024, b24.batting_avg AS avg_2024, b24.ops AS ops_2024, b24.title_awards AS title_2024
+            FROM batting_stats b25
+            JOIN players p ON b25.player_id = p.player_id
+            JOIN teams t ON p.team_id = t.team_id
+            LEFT JOIN batting_stats b24 ON b25.player_id = b24.player_id AND b24.year = 2024
+            WHERE b25.year = 2025
+            ORDER BY b25.war DESC
+            LIMIT 10;
+
+    # --- 2. GenUI (推奨画面設計図) ---
+    gen_ui:
+      recommended_layout: "ComparisonDashboard"
+      framework: "TailwindCSS + Chart.js"
+      color_palette:
+        primary: "#3b82f6"         # 2025年アクセントブルー
+        secondary: "#94a3b8"       # 2024年スレートグレー
+        accent_positive: "#10b981"   # 前年比プラス (+緑)
+        accent_negative: "#ef4444"   # 前年比マイナス (-赤)
+        card_bg: "#1e293b"         # ダークカード背景
+      
+      components:
+        - type: "tabs"
+          labels: ["⚾ 野手ランキング (WAR/WAA)", "🎯 投手ランキング (WAR/WAA)"]
+          default_index: 0
+
+        - type: "chart"
+          chart_type: "bar"
+          title: "2024年 vs 2025年 WAR 成長比較 (グループ棒グラフ)"
+          x_axis: "name"
+          y_axis: "war"
+          series:
+            - key: "war_2024"
+              label: "2024年 WAR"
+              color: "#94a3b8"
+            - key: "war_2025"
+              label: "2025年 WAR"
+              color: "#3b82f6"
+          interaction:
+            event: "click_bar"
+            target_component: "player_detail_card"
+            action: "update_card_with_player_stats"
+            instruction: "Chart.js の onClick(evt, activeEls) でクリックされた選手の 2カ年変化・タイトルをグラフ下部の詳細カードに動的表示すること（alert() は使用禁止）。"
+
+        - type: "detail_card"
+          id: "player_detail_card"
+          title: "選手詳細スタッツ (2カ年比較)"
+          fields:
+            - label: "獲得タイトル"
+              key: "title_awards"
+            - label: "本塁打 / 打率 / OPS"
+              format: "{home_runs}本 / 打率.{batting_avg} / OPS {ops}"
+            - label: "前年比成長"
+              format: "WAR {diff_war} ({sign_war})"
+
+        - type: "table"
+          title: "WAR / WAA 詳細比較ランキング"
+          columns:
+            - { label: "2025順位", key: "rank" }
+            - { label: "選手名", key: "name" }
+            - { label: "球団", key: "team_name" }
+            - { label: "2025 WAR (WAA)", key: "stats_2025" }
+            - { label: "2024 WAR (WAA)", key: "stats_2024" }
+            - { label: "前年比", key: "diff", highlight: true }
+            - { label: "獲得タイトル・主要成績", key: "title_awards" }
+
+        - type: "insight_banner"
+          title: "セイバーメトリクス分析サマリー"
+          description: "WARを最も伸ばした選手の成長要因（2冠・打撃進化など）やチーム優勝貢献度（WAA）のAI要因解説ハイライト"
+
+  # ============================================================================
+  # 2. デジタル庁 行政手続等の棚卸調査データベース (令和6年・令和7年)
+  # ============================================================================
+  - id: "digital_agency_procedures"
+    name: "デジタル庁 行政手続等の棚卸調査データベース (令和6・7年度)"
+    description: "国の法令に基づく約7.5万件の行政手続全数調査データ。所管府省庁、手続類型、オンライン化状況、年間手続件数、添付書類撤廃状況、個人のライフイベント（死亡・相続、引越し、出生等）や法人のライフイベントごとのデジタル化進捗を分析可能。"
+    target_mcp: "admin-procedures"
+    target_tool: "summarize_records"
+    required_roles: ["analyst", "admin"]
+
+    # --- 1. データモデル (スキーマ定義) ---
+    schema:
+      datasets:
+        - id: "procedures-survey-r7"
+          title: "行政手続等の棚卸調査結果（令和7年度最新・約7.6万件）"
+          key_fields:
+            - name: "手続ID"
+              type: "string"
+              desc: "手続を一意に識別するID。"
+            - name: "所管府省庁"
+              type: "string"
+              desc: "手続を所管する国の府省庁名（38府省庁）。"
+            - name: "手続名"
+              type: "string"
+              desc: "手続の名称。"
+            - name: "法令名"
+              type: "string"
+              desc: "手続の根拠法令名称。"
+            - name: "手続類型"
+              type: "string"
+              desc: "手続の類型（1 申請等, 2-1〜2-3 処分通知等, 3 縦覧等, 4 作成・保存等）。"
+            - name: "手続主体"
+              type: "string"
+              desc: "手続を行う主体（1 国, 2 独立行政法人等, 3 地方等, 5 国民等, 6 民間事業者等）。"
+            - name: "事務区分"
+              type: "string"
+              desc: "地方自治体の事務区分（1 自治事務, 2 第1号法定受託事務, 3 第2号法定受託事務, 4 地方の事務でない）。"
+            - name: "オンライン化の実施状況"
+              type: "string"
+              desc: "オンライン実施状況（1 実施済, 2 未実施, 3 適用除外, 4 その他）。"
+            - name: "総手続件数"
+              type: "integer"
+              desc: "年間の全手続件数（概数・試算値含む）。"
+            - name: "オンライン手続件数"
+              type: "integer"
+              desc: "オンラインで手続を実施した年間件数。"
+            - name: "非オンライン手続件数"
+              type: "integer"
+              desc: "窓口・郵送など紙・対面で手続を行った年間件数。"
+            - name: "申請時に添付させる書類"
+              type: "string"
+              multi_value: true
+              desc: "申請時に提出が必須となる典型書類（住民票、戸籍、登記事項証明書、印鑑登録証明書、所得証明書等）。"
+            - name: "添付書類等提出の撤廃/省略状況"
+              type: "string"
+              desc: "添付書類の撤廃状況（1 撤廃・省略済, 2 撤廃・省略予定, 3 撤廃・省略不可, 4 その他）。"
+            - name: "手続が行われるイベント(個人)"
+              type: "string"
+              multi_value: true
+              desc: "個人のライフイベント（死亡・相続、引越し、医療・健康、税金、就職・転職、結婚・離婚、出生・こども、介護、年金の受給等）。"
+            - name: "手続が行われるイベント(法人)"
+              type: "string"
+              multi_value: true
+              desc: "法人のライフイベント（法人の設立、情報変更・役員変更、職員の採用・退職、事務所の新設・移転等）。"
+
+      query_rules:
+        - "集計・クロス集計を行う際は、必ず summarize_records ツールを使用してください。"
+        - "ライフイベント別など複数値項目を集計する際は、explode オプションにその項目名を指定してください。"
+        - "個別手続きの詳細を検索・閲覧したい場合は query_records ツールを使用してください。"
+
+      recommended_queries:
+        - title: "国民ライフイベント別の手続種類数集計"
+          tool: "summarize_records"
+          arguments:
+            dataset_id: "procedures-survey-r7"
+            group_by: ["手続が行われるイベント(個人)"]
+            explode: "手続が行われるイベント(個人)"
+        - title: "提出が必須とされる添付書類ランキング"
+          tool: "summarize_records"
+          arguments:
+            dataset_id: "procedures-survey-r7"
+            group_by: ["申請時に添付させる書類"]
+            explode: "申請時に添付させる書類"
+        - title: "省庁別の手続件数およびオンライン化進捗"
+          tool: "summarize_records"
+          arguments:
+            dataset_id: "procedures-survey-r7"
+            group_by: ["所管府省庁"]
+            metrics: ["count", "sum:総手続件数", "sum:オンライン手続件数"]
+
+    # --- 2. GenUI (推奨画面設計図) ---
+    gen_ui:
+      recommended_layout: "AdministrativeReformDashboard"
+      framework: "TailwindCSS + Chart.js"
+      color_palette:
+        primary: "#0ea5e9"         # デジタル庁シアン
+        accent_online: "#10b981"   # オンライン化済 (エメラルドグリーン)
+        accent_offline: "#f43f5e"  # 未対応・紙原本義務 (ローズレッド)
+        accent_warning: "#f59e0b"  # 検討中・一部実施 (アンバー)
+        card_bg: "#0f172a"         # スレート900
+      
+      components:
+        - type: "stat_grid"
+          items:
+            - label: "全国調査手続総数"
+              value: "76,275件"
+              subtext: "令和7年度棚卸調査"
+            - label: "個人ライフイベント手続"
+              value: "14分野"
+              subtext: "死亡・相続, 引越し, 出生など"
+            - label: "重点改革領域"
+              value: "紙原本添付撤廃"
+              subtext: "住民票・戸籍・印鑑証明"
+
+        - type: "chart"
+          chart_type: "horizontalBar"
+          title: "国民ライフイベント別 行政手続種類数ランキング"
+          x_axis: "手続件数"
+          y_axis: "ライフイベント"
+          interaction:
+            event: "click_bar"
+            target_component: "event_detail_panel"
+            action: "filter_by_event"
+
+        - type: "chart"
+          chart_type: "doughnut"
+          title: "申請時に提出が義務付けられる添付書類の構成比"
+          labels: ["添付書類なし", "その他の添付書類", "登記事項証明書", "住民票", "印鑑登録証明書", "戸籍"]
+
+        - type: "table"
+          title: "ライフイベント別 主要手続・オンライン化状況一覧"
+          columns:
+            - { label: "ライフイベント", key: "event" }
+            - { label: "手続件数", key: "count" }
+            - { label: "代表的な添付書類", key: "typical_attachment" }
+            - { label: "改革優先度", key: "priority", highlight: true }
+

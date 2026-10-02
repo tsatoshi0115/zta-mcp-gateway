@@ -28,6 +28,11 @@ export function verifyToken(
       audience: config.auth?.audience,
     }) as Record<string, any>;
 
+    // Reject refresh tokens used as access tokens
+    if (decoded.token_type && decoded.token_type !== "access") {
+      throw new Error(`Invalid token type: expected access token, got '${decoded.token_type}'`);
+    }
+
     // Extract roles from standard or custom claims
     let roles: string[] = [];
     if (Array.isArray(decoded.roles)) {
