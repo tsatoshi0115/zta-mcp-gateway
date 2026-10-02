@@ -519,7 +519,11 @@ app.post("/mcp/*", async (req: Request, res: Response) => {
 const PORT = config.server.port || 8080;
 const HOST = config.server.host || "0.0.0.0";
 
-if (process.env.NODE_ENV !== "test") {
+const isTestMode =
+  process.env.NODE_ENV === "test" ||
+  process.argv.some((arg) => arg.includes("--test") || arg.includes("test"));
+
+if (!isTestMode) {
   app.listen(PORT, HOST, () => {
     console.log(`[ZTA MCP Gateway] Server running at http://${HOST}:${PORT}`);
     console.log(`[ZTA MCP Gateway] Loaded ${config.upstreams.length} upstream(s)`);
